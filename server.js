@@ -9,7 +9,7 @@ const browsers = new Set();
 
 function broadcastHostsList() {
     const list = {};
-    hosts.forEach((v, k) => list[k] = {online:true});
+    hosts.forEach((v, k) => list[k] = {online:true, name: v.name || ''});
     const msg = JSON.stringify({type:'hosts-list',hosts:list});
     browsers.forEach(ws => { if(ws.readyState===1) ws.send(msg); });
 }
@@ -22,13 +22,13 @@ wss.on('connection', ws => {
             type='browser';
             browsers.add(ws);
             const list={};
-            hosts.forEach((v,k)=>list[k]={online:true});
+            hosts.forEach((v,k)=>list[k]={online:true, name: v.name || ''});
             ws.send(JSON.stringify({type:'hosts-list',hosts:list}));
         }
         if(msg.type==='register-host') {
             type='host';
             id=msg.hostId;
-            hosts.set(id,{ws,password:msg.password||''});
+            hosts.set(id,{ws, password:msg.password||'', name:msg.hostName||''});
             ws.send(JSON.stringify({type:'registered',hostId:id}));
             broadcastHostsList();
         }
