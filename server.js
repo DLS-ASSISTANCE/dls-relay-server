@@ -32,10 +32,6 @@ wss.on('connection', ws => {
             ws.send(JSON.stringify({type:'registered',hostId:id}));
             broadcastHostsList();
         }
-        if(msg.type==='update-password') {
-            const h=hosts.get(id);
-            if(h) h.password=msg.password||'';
-        }
         if(msg.type==='connect-to-host') {
             type='client';
             id='c_'+Date.now();
