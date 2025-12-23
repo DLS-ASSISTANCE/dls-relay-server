@@ -67,6 +67,12 @@ wss.on('connection', (ws) => {
         try {
             const msg = JSON.parse(data.toString());
             
+            // Ping keepalive
+            if (msg.type === 'ping') {
+                ws.isAlive = true;
+                return;
+            }
+            
             // Client browser veut la liste des hôtes
             if (msg.type === 'register-client-browser') {
                 connectionType = 'browser';
@@ -99,7 +105,8 @@ wss.on('connection', (ws) => {
                 hosts.set(msg.hostId, { 
                     ws: ws, 
                     password: msg.password || '',
-                    hostName: msg.hostName || ''
+                    hostName: msg.hostName || '',
+                    thumbnail: null
                 });
                 
                 ws.send(JSON.stringify({ type: 'registered', hostId: msg.hostId }));
@@ -204,53 +211,38 @@ wss.on('connection', (ws) => {
                 }
             }
             
-            // Messages de chat client -> hôte
-            if (msg.type === 'chat-message' && connectionType === 'client') {
-                const client = clients.get(connectionId);
-                if (client) {
-                    const host = hosts.get(client.hostId);
-                    if (host && host.ws.readyState === WebSocket.OPEN) {
-                        try { 
-                            host.ws.send(JSON.stringify({
-                                type: 'chat-message',
-                                from: 'client',
-                                message: msg.message
-                            }));
-                            console.log('Chat message relayed to host:', client.hostId);
-                        } catch(e) {}
+            // Messages de chat
+            if (msg.type === 'chat-message') {
+                if (connectionType === 'host') {
+                    // Du hôte vers tous ses clients
+                    clients.forEach((client, clientId) => {
+                        if (client.hostId === connectionId && client.ws.readyState === WebSocket.OPEN) {
+                            try { client.ws.send(data); } catch(e) {}
+                        }
+                    });
+                } else if (connectionType === 'client') {
+                    // Du client vers l'hôte
+                    const client = clients.get(connectionId);
+                    if (client) {
+                        const host = hosts.get(client.hostId);
+                        if (host && host.ws.readyState === WebSocket.OPEN) {
+                            try { host.ws.send(data); } catch(e) {}
+                        }
                     }
                 }
             }
             
-            // Messages de chat hôte -> clients
-            if (msg.type === 'chat-message' && connectionType === 'host') {
-                clients.forEach((client, clientId) => {
-                    if (client.hostId === connectionId && client.ws.readyState === WebSocket.OPEN) {
-                        try {
-                            client.ws.send(JSON.stringify({
-                                type: 'chat-message',
-                                from: 'host',
-                                message: msg.message
-                            }));
-                        } catch(e) {}
-                    }
-                });
-                console.log('Chat message sent from host:', connectionId);
-            }
-            
-        } catch(e) {
-            console.error('Error processing message:', e.message);
+        } catch (e) {
+            // Ignorer les erreurs de parsing JSON (données binaires d'écran)
         }
     });
     
     ws.on('close', () => {
-        browsers.delete(ws);
-        
-        if (connectionType === 'host' && connectionId) {
+        if (connectionType === 'host') {
             hosts.delete(connectionId);
             broadcastHostsList();
             
-            // Notifier les clients connectés à cet hôte
+            // Notifier les clients que l'hôte est déconnecté
             clients.forEach((client, clientId) => {
                 if (client.hostId === connectionId && client.ws.readyState === WebSocket.OPEN) {
                     try {
@@ -260,9 +252,7 @@ wss.on('connection', (ws) => {
             });
             
             console.log('Host disconnected:', connectionId, '- Remaining hosts:', hosts.size);
-        }
-        
-        if (connectionType === 'client' && connectionId) {
+        } else if (connectionType === 'client') {
             const client = clients.get(connectionId);
             if (client) {
                 const host = hosts.get(client.hostId);
@@ -274,19 +264,17 @@ wss.on('connection', (ws) => {
             }
             clients.delete(connectionId);
             console.log('Client disconnected:', connectionId);
+        } else if (connectionType === 'browser') {
+            browsers.delete(ws);
+            console.log('Browser disconnected - Remaining browsers:', browsers.size);
         }
     });
     
     ws.on('error', (err) => {
-        console.error('WebSocket error:', err.message);
+        console.log('WebSocket error:', err.message);
     });
 });
 
-// Log périodique
-setInterval(() => {
-    console.log('Status - Hosts:', hosts.size, '| Clients:', clients.size, '| Browsers:', browsers.size);
-}, 60000);
-
 server.listen(PORT, () => {
-    console.log('DLS Relay Server v1.1.0 running on port', PORT);
+    console.log(`DLS Relay Server running on port ${PORT}`);
 });
