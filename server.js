@@ -57,7 +57,7 @@ wss.on('close', () => {
 });
 
 wss.on('connection', (ws) => {
-    let connectionType = null;  // 'host', 'client', 'browser'
+    let connectionType = null;
     let connectionId = null;
     
     ws.isAlive = true;
@@ -67,7 +67,6 @@ wss.on('connection', (ws) => {
         try {
             const msg = JSON.parse(data.toString());
             
-            // Ping keepalive
             if (msg.type === 'ping') {
                 ws.isAlive = true;
                 return;
@@ -78,7 +77,6 @@ wss.on('connection', (ws) => {
                 connectionType = 'browser';
                 browsers.add(ws);
                 
-                // Envoyer la liste actuelle avec thumbnails
                 const hostsList = {};
                 hosts.forEach((data, hostId) => {
                     hostsList[hostId] = { 
@@ -96,7 +94,6 @@ wss.on('connection', (ws) => {
                 connectionType = 'host';
                 connectionId = msg.hostId;
                 
-                // Fermer l'ancienne connexion si elle existe
                 const oldHost = hosts.get(msg.hostId);
                 if (oldHost && oldHost.ws !== ws && oldHost.ws.readyState === WebSocket.OPEN) {
                     oldHost.ws.close();
@@ -111,16 +108,7 @@ wss.on('connection', (ws) => {
                 
                 ws.send(JSON.stringify({ type: 'registered', hostId: msg.hostId }));
                 broadcastHostsList();
-                console.log('Host registered:', msg.hostId, '- Name:', msg.hostName || '(none)', '- Total hosts:', hosts.size);
-            }
-            
-            // Mise à jour du mot de passe
-            if (msg.type === 'update-password' && connectionType === 'host') {
-                const host = hosts.get(connectionId);
-                if (host) {
-                    host.password = msg.password || '';
-                    console.log('Password updated for host:', connectionId);
-                }
+                console.log('Host registered:', msg.hostId, '- Name:', msg.hostName || '(none)');
             }
             
             // Client veut se connecter à un hôte
@@ -129,28 +117,29 @@ wss.on('connection', (ws) => {
                 
                 if (!host) {
                     ws.send(JSON.stringify({ type: 'host-not-found' }));
-                    console.log('Connection failed - Host not found:', msg.hostId);
                     return;
                 }
                 
                 if (host.password && host.password !== msg.password) {
                     ws.send(JSON.stringify({ type: 'auth-failed' }));
-                    console.log('Connection failed - Wrong password for host:', msg.hostId);
                     return;
                 }
                 
                 connectionType = 'client';
-                connectionId = 'c_' + Date.now() + '_' + Math.random().toString(36).substr(2, 5);
+                connectionId = 'c_' + Date.now();
                 
                 clients.set(connectionId, { ws: ws, hostId: msg.hostId });
                 
-                ws.send(JSON.stringify({ type: 'auth-success' }));
+                ws.send(JSON.stringify({ 
+                    type: 'auth-success',
+                    hostName: host.hostName || ''
+                }));
                 host.ws.send(JSON.stringify({ type: 'client-connected', clientId: connectionId }));
                 
-                console.log('Client', connectionId, 'connected to host:', msg.hostId);
+                console.log('Client connected to host:', msg.hostId);
             }
             
-            // Données d'écran de l'hôte vers les clients
+            // Données d'écran
             if (msg.type === 'screen-data' && connectionType === 'host') {
                 clients.forEach((client, clientId) => {
                     if (client.hostId === connectionId && client.ws.readyState === WebSocket.OPEN) {
@@ -159,27 +148,25 @@ wss.on('connection', (ws) => {
                 });
             }
             
-            // Liste des écrans de l'hôte vers les clients
+            // Liste des écrans
             if (msg.type === 'monitors-list' && connectionType === 'host') {
                 clients.forEach((client, clientId) => {
                     if (client.hostId === connectionId && client.ws.readyState === WebSocket.OPEN) {
                         try { client.ws.send(data); } catch(e) {}
                     }
                 });
-                console.log('Monitors list sent from host:', connectionId);
             }
             
-            // Thumbnail de l'hôte (pour les tuiles)
+            // Thumbnail
             if (msg.type === 'host-thumbnail' && connectionType === 'host') {
                 const host = hosts.get(connectionId);
                 if (host) {
                     host.thumbnail = msg.thumbnail;
-                    // Diffuser la mise à jour aux browsers
                     broadcastHostsList();
                 }
             }
             
-            // Actions du client vers l'hôte
+            // Actions client -> hôte
             if (['mouse-click', 'mouse-dblclick', 'mouse-rightclick', 'key-press', 'scroll', 'change-monitor'].includes(msg.type)) {
                 if (connectionType === 'client') {
                     const client = clients.get(connectionId);
@@ -192,36 +179,15 @@ wss.on('connection', (ws) => {
                 }
             }
             
-            // Commande de modification des paramètres hôte (depuis un client connecté)
-            if (msg.type === 'update-host-settings' && connectionType === 'client') {
-                const client = clients.get(connectionId);
-                if (client) {
-                    const host = hosts.get(client.hostId);
-                    if (host && host.ws.readyState === WebSocket.OPEN) {
-                        // Relayer la commande à l'hôte
-                        try { 
-                            host.ws.send(JSON.stringify({
-                                type: 'update-settings-request',
-                                setting: msg.setting,  // 'name' ou 'password'
-                                value: msg.value
-                            }));
-                            console.log('Settings update relayed to host:', client.hostId, '-', msg.setting);
-                        } catch(e) {}
-                    }
-                }
-            }
-            
-            // Messages de chat
+            // Messages chat
             if (msg.type === 'chat-message') {
                 if (connectionType === 'host') {
-                    // Du hôte vers tous ses clients
                     clients.forEach((client, clientId) => {
                         if (client.hostId === connectionId && client.ws.readyState === WebSocket.OPEN) {
                             try { client.ws.send(data); } catch(e) {}
                         }
                     });
                 } else if (connectionType === 'client') {
-                    // Du client vers l'hôte
                     const client = clients.get(connectionId);
                     if (client) {
                         const host = hosts.get(client.hostId);
@@ -232,49 +198,11 @@ wss.on('connection', (ws) => {
                 }
             }
             
-        } catch (e) {
-            // Ignorer les erreurs de parsing JSON (données binaires d'écran)
-        }
+        } catch (e) {}
     });
     
     ws.on('close', () => {
         if (connectionType === 'host') {
             hosts.delete(connectionId);
             broadcastHostsList();
-            
-            // Notifier les clients que l'hôte est déconnecté
-            clients.forEach((client, clientId) => {
-                if (client.hostId === connectionId && client.ws.readyState === WebSocket.OPEN) {
-                    try {
-                        client.ws.send(JSON.stringify({ type: 'host-disconnected' }));
-                    } catch(e) {}
-                }
-            });
-            
-            console.log('Host disconnected:', connectionId, '- Remaining hosts:', hosts.size);
-        } else if (connectionType === 'client') {
-            const client = clients.get(connectionId);
-            if (client) {
-                const host = hosts.get(client.hostId);
-                if (host && host.ws.readyState === WebSocket.OPEN) {
-                    try {
-                        host.ws.send(JSON.stringify({ type: 'client-disconnected', clientId: connectionId }));
-                    } catch(e) {}
-                }
-            }
-            clients.delete(connectionId);
-            console.log('Client disconnected:', connectionId);
-        } else if (connectionType === 'browser') {
-            browsers.delete(ws);
-            console.log('Browser disconnected - Remaining browsers:', browsers.size);
-        }
-    });
-    
-    ws.on('error', (err) => {
-        console.log('WebSocket error:', err.message);
-    });
-});
-
-server.listen(PORT, () => {
-    console.log(`DLS Relay Server running on port ${PORT}`);
-});
+            cl
