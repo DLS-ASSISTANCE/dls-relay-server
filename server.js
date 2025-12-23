@@ -1,5 +1,5 @@
 // DLS ASSISTANCE WEB 2026 - Serveur Relais
-// Version 1.1.0 - Code stable et fiable
+// Version 1.1.2
 // Hébergé sur Render.com
 
 const WebSocket = require('ws');
@@ -10,7 +10,7 @@ const PORT = process.env.PORT || 10000;
 // Créer serveur HTTP pour health check
 const server = http.createServer((req, res) => {
     res.writeHead(200, { 'Content-Type': 'text/plain' });
-    res.end('DLS Relay Server v1.1.0 - OK - Hosts: ' + hosts.size);
+    res.end('DLS Relay Server v1.1.2 - OK - Hosts: ' + hosts.size);
 });
 
 const wss = new WebSocket.Server({ server });
@@ -20,9 +20,9 @@ const hosts = new Map();      // hostId -> { ws, password, hostName, thumbnail }
 const clients = new Map();    // clientId -> { ws, hostId }
 const browsers = new Set();   // clients qui veulent la liste des hôtes
 
-console.log('DLS Relay Server v1.1.0 starting...');
+console.log('DLS Relay Server v1.1.2 starting...');
 
-// Diffuser la liste des hôtes à tous les browsers (avec thumbnails)
+// Diffuser la liste des hôtes à tous les browsers
 function broadcastHostsList() {
     const hostsList = {};
     hosts.forEach((data, hostId) => {
@@ -67,6 +67,7 @@ wss.on('connection', (ws) => {
         try {
             const msg = JSON.parse(data.toString());
             
+            // Ping keepalive - répondre immédiatement
             if (msg.type === 'ping') {
                 ws.isAlive = true;
                 return;
@@ -77,6 +78,7 @@ wss.on('connection', (ws) => {
                 connectionType = 'browser';
                 browsers.add(ws);
                 
+                // Envoyer la liste actuelle avec thumbnails
                 const hostsList = {};
                 hosts.forEach((data, hostId) => {
                     hostsList[hostId] = { 
@@ -94,6 +96,7 @@ wss.on('connection', (ws) => {
                 connectionType = 'host';
                 connectionId = msg.hostId;
                 
+                // Fermer l'ancienne connexion si existe
                 const oldHost = hosts.get(msg.hostId);
                 if (oldHost && oldHost.ws !== ws && oldHost.ws.readyState === WebSocket.OPEN) {
                     oldHost.ws.close();
@@ -117,29 +120,32 @@ wss.on('connection', (ws) => {
                 
                 if (!host) {
                     ws.send(JSON.stringify({ type: 'host-not-found' }));
+                    console.log('Host not found:', msg.hostId);
                     return;
                 }
                 
                 if (host.password && host.password !== msg.password) {
                     ws.send(JSON.stringify({ type: 'auth-failed' }));
+                    console.log('Auth failed for host:', msg.hostId);
                     return;
                 }
                 
                 connectionType = 'client';
-                connectionId = 'c_' + Date.now();
+                connectionId = 'c_' + Date.now() + '_' + Math.random().toString(36).substr(2, 5);
                 
                 clients.set(connectionId, { ws: ws, hostId: msg.hostId });
                 
+                // Envoyer auth-success avec le nom de l'hôte
                 ws.send(JSON.stringify({ 
                     type: 'auth-success',
                     hostName: host.hostName || ''
                 }));
                 host.ws.send(JSON.stringify({ type: 'client-connected', clientId: connectionId }));
                 
-                console.log('Client connected to host:', msg.hostId);
+                console.log('Client', connectionId, 'connected to host:', msg.hostId);
             }
             
-            // Données d'écran
+            // Données d'écran (host -> clients)
             if (msg.type === 'screen-data' && connectionType === 'host') {
                 clients.forEach((client, clientId) => {
                     if (client.hostId === connectionId && client.ws.readyState === WebSocket.OPEN) {
@@ -148,7 +154,7 @@ wss.on('connection', (ws) => {
                 });
             }
             
-            // Liste des écrans
+            // Liste des moniteurs
             if (msg.type === 'monitors-list' && connectionType === 'host') {
                 clients.forEach((client, clientId) => {
                     if (client.hostId === connectionId && client.ws.readyState === WebSocket.OPEN) {
@@ -157,7 +163,7 @@ wss.on('connection', (ws) => {
                 });
             }
             
-            // Thumbnail
+            // Thumbnail de l'hôte
             if (msg.type === 'host-thumbnail' && connectionType === 'host') {
                 const host = hosts.get(connectionId);
                 if (host) {
@@ -166,7 +172,7 @@ wss.on('connection', (ws) => {
                 }
             }
             
-            // Actions client -> hôte
+            // Actions du client vers l'hôte
             if (['mouse-click', 'mouse-dblclick', 'mouse-rightclick', 'key-press', 'scroll', 'change-monitor'].includes(msg.type)) {
                 if (connectionType === 'client') {
                     const client = clients.get(connectionId);
@@ -179,15 +185,17 @@ wss.on('connection', (ws) => {
                 }
             }
             
-            // Messages chat
+            // Messages de chat
             if (msg.type === 'chat-message') {
                 if (connectionType === 'host') {
+                    // Host -> tous ses clients
                     clients.forEach((client, clientId) => {
                         if (client.hostId === connectionId && client.ws.readyState === WebSocket.OPEN) {
                             try { client.ws.send(data); } catch(e) {}
                         }
                     });
                 } else if (connectionType === 'client') {
+                    // Client -> son host
                     const client = clients.get(connectionId);
                     if (client) {
                         const host = hosts.get(client.hostId);
@@ -198,11 +206,61 @@ wss.on('connection', (ws) => {
                 }
             }
             
-        } catch (e) {}
+            // Mise à jour des paramètres hôte
+            if (msg.type === 'update-host-settings' && connectionType === 'host') {
+                const host = hosts.get(connectionId);
+                if (host) {
+                    if (msg.hostName !== undefined) host.hostName = msg.hostName;
+                    if (msg.password !== undefined) host.password = msg.password;
+                    broadcastHostsList();
+                    console.log('Host settings updated:', connectionId);
+                }
+            }
+            
+        } catch (e) {
+            console.error('Error processing message:', e.message);
+        }
     });
     
     ws.on('close', () => {
         if (connectionType === 'host') {
             hosts.delete(connectionId);
             broadcastHostsList();
-            cl
+            
+            // Notifier les clients connectés
+            clients.forEach((client, clientId) => {
+                if (client.hostId === connectionId && client.ws.readyState === WebSocket.OPEN) {
+                    try {
+                        client.ws.send(JSON.stringify({ type: 'host-disconnected' }));
+                    } catch(e) {}
+                }
+            });
+            console.log('Host disconnected:', connectionId);
+            
+        } else if (connectionType === 'client') {
+            const client = clients.get(connectionId);
+            if (client) {
+                const host = hosts.get(client.hostId);
+                if (host && host.ws.readyState === WebSocket.OPEN) {
+                    try {
+                        host.ws.send(JSON.stringify({ type: 'client-disconnected', clientId: connectionId }));
+                    } catch(e) {}
+                }
+            }
+            clients.delete(connectionId);
+            console.log('Client disconnected:', connectionId);
+            
+        } else if (connectionType === 'browser') {
+            browsers.delete(ws);
+            console.log('Browser disconnected - Remaining:', browsers.size);
+        }
+    });
+    
+    ws.on('error', (err) => {
+        console.error('WebSocket error:', err.message);
+    });
+});
+
+server.listen(PORT, () => {
+    console.log(`DLS Relay Server v1.1.2 running on port ${PORT}`);
+});
